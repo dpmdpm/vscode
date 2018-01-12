@@ -1123,6 +1123,13 @@ export class TerminalInstance implements ITerminalInstance {
 	private _updateTheme(theme?: ITheme): void {
 		this._xterm.setOption('theme', this._getXtermTheme(theme));
 	}
+
+	public enterNavigationMode(): void {
+		const a11yManager = (<any>this._xterm)._accessibilityManager;
+		if (a11yManager) {
+			a11yManager.enterNavigationMode();
+		}
+	}
 }
 
 registerThemingParticipant((theme: ITheme, collector: ICssStyleCollector) => {

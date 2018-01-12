@@ -140,6 +140,10 @@
 	color: transparent;
 }
 
+.xterm .xterm-accessibility-tree:focus [id^="xterm-active-item-"] {
+	outline: 1px solid #F80;
+}
+
 .xterm .live-region {
 	position: absolute;
 	left: -9999px;
