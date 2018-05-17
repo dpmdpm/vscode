@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 
-import nls = require('vs/nls');
+import * as nls from 'vs/nls';
 import { Registry } from 'vs/platform/registry/common/platform';
 import { GlobalNewUntitledFileAction, ShowOpenedFileInNewWindow, CopyPathAction, FocusOpenEditorsView, FocusFilesExplorer, GlobalCompareResourcesAction, SaveAllAction, ShowActiveFileInExplorer, CollapseExplorerView, RefreshExplorerView, CompareWithClipboardAction, NEW_FILE_COMMAND_ID, NEW_FILE_LABEL, NEW_FOLDER_COMMAND_ID, NEW_FOLDER_LABEL, TRIGGER_RENAME_LABEL, MOVE_FILE_TO_TRASH_LABEL, COPY_FILE_LABEL, PASTE_FILE_LABEL, FileCopiedContext, renameHandler, moveFileToTrashHandler, copyFileHandler, pasteFileHandler, deleteFileHandler } from 'vs/workbench/parts/files/electron-browser/fileActions';
 import { revertLocalChangesCommand, acceptLocalChangesCommand, CONFLICT_RESOLUTION_CONTEXT } from 'vs/workbench/parts/files/electron-browser/saveErrorHandler';
@@ -16,14 +16,15 @@ import { CommandsRegistry, ICommandHandler } from 'vs/platform/commands/common/c
 import { ContextKeyExpr } from 'vs/platform/contextkey/common/contextkey';
 import { KeybindingsRegistry } from 'vs/platform/keybinding/common/keybindingsRegistry';
 import { isWindows, isMacintosh } from 'vs/base/common/platform';
-import { FilesExplorerFocusCondition, ExplorerRootContext, ExplorerFolderContext, ExplorerFocusedContext } from 'vs/workbench/parts/files/common/files';
+import { FilesExplorerFocusCondition, ExplorerRootContext, ExplorerFolderContext } from 'vs/workbench/parts/files/common/files';
 import { ADD_ROOT_FOLDER_COMMAND_ID, ADD_ROOT_FOLDER_LABEL } from 'vs/workbench/browser/actions/workspaceCommands';
-import { CLOSE_UNMODIFIED_EDITORS_COMMAND_ID, CLOSE_EDITORS_IN_GROUP_COMMAND_ID, CLOSE_EDITOR_COMMAND_ID, CLOSE_OTHER_EDITORS_IN_GROUP_COMMAND_ID } from 'vs/workbench/browser/parts/editor/editorCommands';
+import { CLOSE_SAVED_EDITORS_COMMAND_ID, CLOSE_EDITORS_IN_GROUP_COMMAND_ID, CLOSE_EDITOR_COMMAND_ID, CLOSE_OTHER_EDITORS_IN_GROUP_COMMAND_ID } from 'vs/workbench/browser/parts/editor/editorCommands';
 import { OPEN_FOLDER_SETTINGS_COMMAND, OPEN_FOLDER_SETTINGS_LABEL } from 'vs/workbench/parts/preferences/browser/preferencesActions';
 import { AutoSaveContext } from 'vs/workbench/services/textfile/common/textfiles';
 import { ResourceContextKey } from 'vs/workbench/common/resources';
 import { WorkbenchListDoubleSelection } from 'vs/platform/list/browser/listService';
-
+import URI from 'vs/base/common/uri';
+import { Schemas } from 'vs/base/common/network';
 
 // Contribute Global Actions
 const category = nls.localize('filesCategory', "File");
@@ -95,13 +96,13 @@ const PASTE_FILE_ID = 'filesExplorer.paste';
 KeybindingsRegistry.registerCommandAndKeybindingRule({
 	id: PASTE_FILE_ID,
 	weight: KeybindingsRegistry.WEIGHT.workbenchContrib(explorerCommandsWeightBonus),
-	when: ContextKeyExpr.and(FilesExplorerFocusCondition, FileCopiedContext),
+	when: ContextKeyExpr.and(FilesExplorerFocusCondition),
 	primary: KeyMod.CtrlCmd | KeyCode.KEY_V,
 	handler: pasteFileHandler
 });
 
 // Editor Title Context Menu
-appendEditorTitleContextMenuItem(REVEAL_IN_OS_COMMAND_ID, REVEAL_IN_OS_LABEL, ResourceContextKey.Scheme.isEqualTo('file'));
+appendEditorTitleContextMenuItem(REVEAL_IN_OS_COMMAND_ID, REVEAL_IN_OS_LABEL, ResourceContextKey.Scheme.isEqualTo(Schemas.file));
 appendEditorTitleContextMenuItem(COPY_PATH_COMMAND_ID, CopyPathAction.LABEL, ResourceContextKey.IsFile);
 appendEditorTitleContextMenuItem(REVEAL_IN_EXPLORER_COMMAND_ID, nls.localize('revealInSideBar', "Reveal in Side Bar"), ResourceContextKey.IsFile);
 
@@ -116,17 +117,23 @@ function appendEditorTitleContextMenuItem(id: string, title: string, when: Conte
 }
 
 // Editor Title Menu for Conflict Resolution
-appendSaveConflictEditorTitleAction('workbench.files.action.acceptLocalChanges', nls.localize('acceptLocalChanges', "Use your changes and overwrite disk contents"), 'save-conflict-action-accept-changes', -10, acceptLocalChangesCommand);
-appendSaveConflictEditorTitleAction('workbench.files.action.revertLocalChanges', nls.localize('revertLocalChanges', "Discard your changes and revert to content on disk"), 'save-conflict-action-revert-changes', -9, revertLocalChangesCommand);
+appendSaveConflictEditorTitleAction('workbench.files.action.acceptLocalChanges', nls.localize('acceptLocalChanges', "Use your changes and overwrite disk contents"), {
+	light: URI.parse(require.toUrl(`vs/workbench/parts/files/electron-browser/media/check.svg`)).fsPath,
+	dark: URI.parse(require.toUrl(`vs/workbench/parts/files/electron-browser/media/check-inverse.svg`)).fsPath
+}, -10, acceptLocalChangesCommand);
+appendSaveConflictEditorTitleAction('workbench.files.action.revertLocalChanges', nls.localize('revertLocalChanges', "Discard your changes and revert to content on disk"), {
+	light: URI.parse(require.toUrl(`vs/workbench/parts/files/electron-browser/media/undo.svg`)).fsPath,
+	dark: URI.parse(require.toUrl(`vs/workbench/parts/files/electron-browser/media/undo-inverse.svg`)).fsPath
+}, -9, revertLocalChangesCommand);
 
-function appendSaveConflictEditorTitleAction(id: string, title: string, iconClass: string, order: number, command: ICommandHandler): void {
+function appendSaveConflictEditorTitleAction(id: string, title: string, iconPath: { dark: string; light?: string; }, order: number, command: ICommandHandler): void {
 
 	// Command
 	CommandsRegistry.registerCommand(id, command);
 
 	// Action
 	MenuRegistry.appendMenuItem(MenuId.EditorTitle, {
-		command: { id, title, iconClass },
+		command: { id, title, iconPath },
 		when: ContextKeyExpr.equals(CONFLICT_RESOLUTION_CONTEXT, true),
 		group: 'navigation',
 		order
@@ -135,14 +142,13 @@ function appendSaveConflictEditorTitleAction(id: string, title: string, iconClas
 
 // Menu registration - command palette
 
-function appendToCommandPalette(id: string, title: string, category: string, when?: ContextKeyExpr): void {
+function appendToCommandPalette(id: string, title: string, category: string): void {
 	MenuRegistry.appendMenuItem(MenuId.CommandPalette, {
 		command: {
 			id,
 			title,
 			category
-		},
-		when
+		}
 	});
 }
 appendToCommandPalette(COPY_PATH_COMMAND_ID, nls.localize('copyPathOfActive', "Copy Path of Active File"), category);
@@ -154,8 +160,8 @@ appendToCommandPalette(COMPARE_WITH_SAVED_COMMAND_ID, nls.localize('compareActiv
 appendToCommandPalette(REVEAL_IN_OS_COMMAND_ID, REVEAL_IN_OS_LABEL, category);
 appendToCommandPalette(SAVE_FILE_AS_COMMAND_ID, SAVE_FILE_AS_LABEL, category);
 appendToCommandPalette(CLOSE_EDITOR_COMMAND_ID, nls.localize('closeEditor', "Close Editor"), nls.localize('view', "View"));
-appendToCommandPalette(NEW_FILE_COMMAND_ID, NEW_FILE_LABEL, category, ExplorerFocusedContext);
-appendToCommandPalette(NEW_FOLDER_COMMAND_ID, NEW_FOLDER_LABEL, category, ExplorerFocusedContext);
+appendToCommandPalette(NEW_FILE_COMMAND_ID, NEW_FILE_LABEL, category);
+appendToCommandPalette(NEW_FOLDER_COMMAND_ID, NEW_FOLDER_LABEL, category);
 
 
 
@@ -169,7 +175,7 @@ MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
 	group: 'navigation',
 	order: 10,
 	command: openToSideCommand,
-	when: ResourceContextKey.HasResource
+	when: ResourceContextKey.IsFile
 });
 
 const revealInOsCommand = {
@@ -180,7 +186,7 @@ MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
 	group: 'navigation',
 	order: 20,
 	command: revealInOsCommand,
-	when: ResourceContextKey.Scheme.isEqualTo('file')
+	when: ResourceContextKey.Scheme.isEqualTo(Schemas.file)
 });
 
 const copyPathCommand = {
@@ -202,7 +208,7 @@ MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
 		title: SAVE_FILE_LABEL,
 		precondition: DirtyEditorContext
 	},
-	when: ContextKeyExpr.and(ResourceContextKey.IsFile, AutoSaveContext.notEqualsTo('afterDelay'))
+	when: ContextKeyExpr.and(ResourceContextKey.IsFile, AutoSaveContext.notEqualsTo('afterDelay') && AutoSaveContext.notEqualsTo(''))
 });
 
 MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
@@ -213,7 +219,7 @@ MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
 		title: nls.localize('revert', "Revert File"),
 		precondition: DirtyEditorContext
 	},
-	when: ContextKeyExpr.and(ResourceContextKey.IsFile, AutoSaveContext.notEqualsTo('afterDelay'))
+	when: ContextKeyExpr.and(ResourceContextKey.IsFile, AutoSaveContext.notEqualsTo('afterDelay') && AutoSaveContext.notEqualsTo(''))
 });
 
 MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
@@ -222,7 +228,7 @@ MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
 		id: SAVE_FILE_AS_COMMAND_ID,
 		title: SAVE_FILE_AS_LABEL
 	},
-	when: ResourceContextKey.Scheme.isEqualTo('untitled')
+	when: ResourceContextKey.Scheme.isEqualTo(Schemas.untitled)
 });
 
 MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
@@ -231,7 +237,7 @@ MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
 		id: SAVE_ALL_IN_GROUP_COMMAND_ID,
 		title: nls.localize('saveAll', "Save All")
 	},
-	when: ContextKeyExpr.and(OpenEditorsGroupContext, AutoSaveContext.notEqualsTo('afterDelay'))
+	when: ContextKeyExpr.and(OpenEditorsGroupContext, AutoSaveContext.notEqualsTo('afterDelay') && AutoSaveContext.notEqualsTo(''))
 });
 
 MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
@@ -242,7 +248,7 @@ MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
 		title: nls.localize('compareWithSaved', "Compare with Saved"),
 		precondition: DirtyEditorContext
 	},
-	when: ContextKeyExpr.and(ResourceContextKey.IsFile, AutoSaveContext.notEqualsTo('afterDelay'), WorkbenchListDoubleSelection.toNegated())
+	when: ContextKeyExpr.and(ResourceContextKey.IsFile, AutoSaveContext.notEqualsTo('afterDelay') && AutoSaveContext.notEqualsTo(''), WorkbenchListDoubleSelection.toNegated())
 });
 
 const compareResourceCommand = {
@@ -253,7 +259,7 @@ MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
 	group: '3_compare',
 	order: 20,
 	command: compareResourceCommand,
-	when: ContextKeyExpr.and(ResourceContextKey.IsFile, ResourceSelectedForCompareContext, WorkbenchListDoubleSelection.toNegated())
+	when: ContextKeyExpr.and(ResourceContextKey.HasResource, ResourceSelectedForCompareContext, WorkbenchListDoubleSelection.toNegated())
 });
 
 const selectForCompareCommand = {
@@ -264,7 +270,7 @@ MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
 	group: '3_compare',
 	order: 30,
 	command: selectForCompareCommand,
-	when: ContextKeyExpr.and(ResourceContextKey.IsFile, WorkbenchListDoubleSelection.toNegated())
+	when: ContextKeyExpr.and(ResourceContextKey.HasResource, WorkbenchListDoubleSelection.toNegated())
 });
 
 const compareSelectedCommand = {
@@ -275,7 +281,7 @@ MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
 	group: '3_compare',
 	order: 30,
 	command: compareSelectedCommand,
-	when: ContextKeyExpr.and(ResourceContextKey.IsFile, WorkbenchListDoubleSelection)
+	when: ContextKeyExpr.and(ResourceContextKey.HasResource, WorkbenchListDoubleSelection)
 });
 
 MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
@@ -302,8 +308,8 @@ MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
 	group: '4_close',
 	order: 30,
 	command: {
-		id: CLOSE_UNMODIFIED_EDITORS_COMMAND_ID,
-		title: nls.localize('closeUnmodified', "Close Unmodified")
+		id: CLOSE_SAVED_EDITORS_COMMAND_ID,
+		title: nls.localize('closeSaved', "Close Saved")
 	}
 });
 
@@ -349,7 +355,7 @@ MenuRegistry.appendMenuItem(MenuId.ExplorerContext, {
 	group: 'navigation',
 	order: 20,
 	command: revealInOsCommand,
-	when: ResourceContextKey.Scheme.isEqualTo('file')
+	when: ResourceContextKey.Scheme.isEqualTo(Schemas.file)
 });
 
 MenuRegistry.appendMenuItem(MenuId.ExplorerContext, {

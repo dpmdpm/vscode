@@ -12,7 +12,7 @@ import { IKeybindings } from 'vs/platform/keybinding/common/keybindingsRegistry'
 import { ContextKeyExpr, IContextKeyService } from 'vs/platform/contextkey/common/contextkey';
 import { ICommandService } from 'vs/platform/commands/common/commands';
 import { IDisposable } from 'vs/base/common/lifecycle';
-import Event from 'vs/base/common/event';
+import { Event } from 'vs/base/common/event';
 
 export interface ILocalizedString {
 	value: string;
@@ -23,8 +23,7 @@ export interface ICommandAction {
 	id: string;
 	title: string | ILocalizedString;
 	category?: string | ILocalizedString;
-	iconClass?: string;
-	iconPath?: string;
+	iconPath?: { dark: string; light?: string; };
 	precondition?: ContextKeyExpr;
 }
 
@@ -60,6 +59,7 @@ export class MenuId {
 	static readonly ViewTitle = new MenuId();
 	static readonly ViewItemContext = new MenuId();
 	static readonly TouchBarContext = new MenuId();
+	static readonly SearchContext = new MenuId();
 
 	readonly id: string = String(MenuId.ID++);
 }
@@ -155,7 +155,7 @@ export class ExecuteCommandAction extends Action {
 	constructor(
 		id: string,
 		label: string,
-		@ICommandService private _commandService: ICommandService) {
+		@ICommandService private readonly _commandService: ICommandService) {
 
 		super(id, label);
 	}
@@ -180,7 +180,7 @@ export class MenuItemAction extends ExecuteCommandAction {
 		@ICommandService commandService: ICommandService
 	) {
 		typeof item.title === 'string' ? super(item.id, item.title, commandService) : super(item.id, item.title.value, commandService);
-		this._cssClass = item.iconClass;
+		this._cssClass = undefined;
 		this._enabled = !item.precondition || contextKeyService.contextMatchesRules(item.precondition);
 		this._options = options || {};
 

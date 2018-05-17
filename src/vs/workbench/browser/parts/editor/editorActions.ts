@@ -5,11 +5,11 @@
 'use strict';
 
 import { TPromise } from 'vs/base/common/winjs.base';
-import nls = require('vs/nls');
+import * as nls from 'vs/nls';
 import { Action } from 'vs/base/common/actions';
 import { mixin } from 'vs/base/common/objects';
 import { getCodeEditor } from 'vs/editor/browser/services/codeEditorService';
-import { EditorInput, TextEditorOptions, EditorOptions, IEditorIdentifier, ActiveEditorMoveArguments, ActiveEditorMovePositioning, EditorCommands, ConfirmResult } from 'vs/workbench/common/editor';
+import { EditorInput, TextEditorOptions, EditorOptions, IEditorIdentifier, ActiveEditorMoveArguments, ActiveEditorMovePositioning, EditorCommands, ConfirmResult, IEditorCommandsContext } from 'vs/workbench/common/editor';
 import { QuickOpenEntryGroup } from 'vs/base/parts/quickopen/browser/quickOpenModel';
 import { EditorQuickOpenEntry, EditorQuickOpenEntryGroup, IEditorQuickOpenEntry, QuickOpenAction } from 'vs/workbench/browser/quickopen';
 import { IWorkbenchEditorService } from 'vs/workbench/services/editor/common/editorService';
@@ -38,10 +38,11 @@ export class SplitEditorAction extends Action {
 		super(id, label, 'split-editor-action');
 	}
 
-	public run(context?: IEditorIdentifier): TPromise<any> {
+	public run(context?: IEditorCommandsContext): TPromise<any> {
 		let editorToSplit: IEditor;
 		if (context) {
-			editorToSplit = this.editorService.getVisibleEditors()[this.editorGroupService.getStacksModel().positionOfGroup(context.group)];
+			const stacks = this.editorGroupService.getStacksModel();
+			editorToSplit = this.editorService.getVisibleEditors()[stacks.positionOfGroup(stacks.getGroup(context.groupId))];
 		} else {
 			editorToSplit = this.editorService.getActiveEditor();
 		}
@@ -537,8 +538,52 @@ export class CloseEditorAction extends Action {
 		super(id, label, 'close-editor-action');
 	}
 
-	public run(context?: IEditorIdentifier): TPromise<any> {
+	public run(context?: IEditorCommandsContext): TPromise<any> {
 		return this.commandService.executeCommand(CLOSE_EDITOR_COMMAND_ID, void 0, context);
+	}
+}
+
+export class CloseOneEditorAction extends Action {
+
+	public static readonly ID = 'workbench.action.closeActiveEditor';
+	public static readonly LABEL = nls.localize('closeOneEditor', "Close");
+
+	constructor(
+		id: string,
+		label: string,
+		@IWorkbenchEditorService private editorService: IWorkbenchEditorService,
+		@IEditorGroupService private editorGroupService: IEditorGroupService
+	) {
+		super(id, label, 'close-editor-action');
+	}
+
+	public run(context?: IEditorCommandsContext): TPromise<any> {
+		const model = this.editorGroupService.getStacksModel();
+
+		const group = context ? model.getGroup(context.groupId) : null;
+		const position = group ? model.positionOfGroup(group) : null;
+
+		// Close Active Editor
+		if (typeof position !== 'number') {
+			const activeEditor = this.editorService.getActiveEditor();
+			if (activeEditor) {
+				return this.editorService.closeEditor(activeEditor.position, activeEditor.input);
+			}
+		}
+
+		// Close Specific Editor
+		const editor = group && context && typeof context.editorIndex === 'number' ? group.getEditor(context.editorIndex) : null;
+		if (editor) {
+			return this.editorService.closeEditor(position, editor);
+		}
+
+		// Close First Editor at Position
+		const visibleEditors = this.editorService.getVisibleEditors();
+		if (visibleEditors[position]) {
+			return this.editorService.closeEditor(position, visibleEditors[position].input);
+		}
+
+		return TPromise.as(false);
 	}
 }
 

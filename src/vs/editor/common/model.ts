@@ -14,6 +14,8 @@ import { Range, IRange } from 'vs/editor/common/core/range';
 import { Selection } from 'vs/editor/common/core/selection';
 import { ModelRawContentChangedEvent, IModelContentChangedEvent, IModelDecorationsChangedEvent, IModelLanguageChangedEvent, IModelOptionsChangedEvent, IModelLanguageConfigurationChangedEvent, IModelTokensChangedEvent, IModelContentChange } from 'vs/editor/common/model/textModelEvents';
 import { ThemeColor } from 'vs/platform/theme/common/themeService';
+import { ITextSnapshot } from 'vs/platform/files/common/files';
+import { SearchData } from 'vs/editor/common/model/textModelSearch';
 
 /**
  * Vertical Lane in the overview ruler of the editor.
@@ -79,7 +81,12 @@ export interface IModelDecorationOptions {
 	 * Always render the decoration (even when the range it encompasses is collapsed).
 	 * @internal
 	 */
-	readonly showIfCollapsed?: boolean;
+	showIfCollapsed?: boolean;
+	/**
+	 * Specifies the stack order of a decoration.
+	 * A decoration with greater stack order is always in front of a decoration with a lower stack order.
+	 */
+	zIndex?: number;
 	/**
 	 * If set, render this decoration in the overview ruler.
 	 */
@@ -102,6 +109,10 @@ export interface IModelDecorationOptions {
 	 * to have a background color decoration.
 	 */
 	inlineClassName?: string;
+	/**
+	 * If there is an `inlineClassName` which affects letter spacing.
+	 */
+	inlineClassNameAffectsLetterSpacing?: boolean;
 	/**
 	 * If set, the decoration will be rendered before the text with this CSS class name.
 	 */
@@ -388,6 +399,8 @@ export interface ITextModelCreationOptions {
 	detectIndentation: boolean;
 	trimAutoWhitespace: boolean;
 	defaultEOL: DefaultEndOfLine;
+	isForSimpleWidget: boolean;
+	largeFileOptimizations: boolean;
 }
 
 export interface ITextModelUpdateOptions {
@@ -433,6 +446,15 @@ export enum TrackedRangeStickiness {
 }
 
 /**
+ * @internal
+ */
+export interface IActiveIndentGuideInfo {
+	startLineNumber: number;
+	endLineNumber: number;
+	indent: number;
+}
+
+/**
  * A model.
  */
 export interface ITextModel {
@@ -446,6 +468,12 @@ export interface ITextModel {
 	 * A unique identifier associated with this model.
 	 */
 	readonly id: string;
+
+	/**
+	 * This model is constructed for a simple widget code editor.
+	 * @internal
+	 */
+	readonly isForSimpleWidget: boolean;
 
 	/**
 	 * If true, the text model might contain RTL.
@@ -500,6 +528,14 @@ export interface ITextModel {
 	getValue(eol?: EndOfLinePreference, preserveBOM?: boolean): string;
 
 	/**
+	 * Get the text stored in this model.
+	 * @param preserverBOM Preserve a BOM character if it was detected when the model was constructed.
+	 * @return The text snapshot (it is safe to consume it asynchronously).
+	 * @internal
+	 */
+	createSnapshot(preserveBOM?: boolean): ITextSnapshot;
+
+	/**
 	 * Get the length of the text stored in this model.
 	 */
 	getValueLength(eol?: EndOfLinePreference, preserveBOM?: boolean): number;
@@ -544,6 +580,10 @@ export interface ITextModel {
 	 */
 	getLineContent(lineNumber: number): string;
 
+	/**
+	 * Get the text length for a certain line.
+	 */
+	getLineLength(lineNumber: number): number;
 
 	/**
 	 * Get the text for all lines.
@@ -555,11 +595,6 @@ export interface ITextModel {
 	 * @return EOL char sequence (e.g.: '\n' or '\r\n').
 	 */
 	getEOL(): string;
-
-	/**
-	 * Change the end of line sequence used in the text buffer.
-	 */
-	setEOL(eol: EndOfLineSequence): void;
 
 	/**
 	 * Get the minimum legal column for line at `lineNumber`
@@ -634,11 +669,16 @@ export interface ITextModel {
 	isDisposed(): boolean;
 
 	/**
-	 * Only basic mode supports allowed on this model because it is simply too large.
-	 * (tokenization is allowed and other basic supports)
 	 * @internal
 	 */
-	isTooLargeForHavingARichMode(): boolean;
+	tokenizeViewport(startLineNumber: number, endLineNumber: number): void;
+
+	/**
+	 * This model is so large that it would not be a good idea to sync it over
+	 * to web workers or other places.
+	 * @internal
+	 */
+	isTooLargeForSyncing(): boolean;
 
 	/**
 	 * The file is so large, that even tokenization is disabled.
@@ -657,7 +697,7 @@ export interface ITextModel {
 	 * @param limitResultCount Limit the number of results
 	 * @return The ranges where the matches are. It is empty if not matches have been found.
 	 */
-	findMatches(searchString: string, searchOnlyEditableRange: boolean, isRegex: boolean, matchCase: boolean, wordSeparators: string, captureMatches: boolean, limitResultCount?: number): FindMatch[];
+	findMatches(searchString: string, searchOnlyEditableRange: boolean, isRegex: boolean, matchCase: boolean, wordSeparators: string | null, captureMatches: boolean, limitResultCount?: number): FindMatch[];
 	/**
 	 * Search the model.
 	 * @param searchString The string used to search. If it is a regular expression, set `isRegex` to true.
@@ -669,7 +709,7 @@ export interface ITextModel {
 	 * @param limitResultCount Limit the number of results
 	 * @return The ranges where the matches are. It is empty if no matches have been found.
 	 */
-	findMatches(searchString: string, searchScope: IRange, isRegex: boolean, matchCase: boolean, wordSeparators: string, captureMatches: boolean, limitResultCount?: number): FindMatch[];
+	findMatches(searchString: string, searchScope: IRange, isRegex: boolean, matchCase: boolean, wordSeparators: string | null, captureMatches: boolean, limitResultCount?: number): FindMatch[];
 	/**
 	 * Search the model for the next match. Loops to the beginning of the model if needed.
 	 * @param searchString The string used to search. If it is a regular expression, set `isRegex` to true.
@@ -680,7 +720,7 @@ export interface ITextModel {
 	 * @param captureMatches The result will contain the captured groups.
 	 * @return The range where the next match is. It is null if no next match has been found.
 	 */
-	findNextMatch(searchString: string, searchStart: IPosition, isRegex: boolean, matchCase: boolean, wordSeparators: string, captureMatches: boolean): FindMatch;
+	findNextMatch(searchString: string, searchStart: IPosition, isRegex: boolean, matchCase: boolean, wordSeparators: string | null, captureMatches: boolean): FindMatch;
 	/**
 	 * Search the model for the previous match. Loops to the end of the model if needed.
 	 * @param searchString The string used to search. If it is a regular expression, set `isRegex` to true.
@@ -691,7 +731,7 @@ export interface ITextModel {
 	 * @param captureMatches The result will contain the captured groups.
 	 * @return The range where the previous match is. It is null if no previous match has been found.
 	 */
-	findPreviousMatch(searchString: string, searchStart: IPosition, isRegex: boolean, matchCase: boolean, wordSeparators: string, captureMatches: boolean): FindMatch;
+	findPreviousMatch(searchString: string, searchStart: IPosition, isRegex: boolean, matchCase: boolean, wordSeparators: string | null, captureMatches: boolean): FindMatch;
 
 	/**
 	 * Get the language associated with this model.
@@ -819,6 +859,11 @@ export interface ITextModel {
 	 * @internal
 	 */
 	matchBracket(position: IPosition): [Range, Range];
+
+	/**
+	 * @internal
+	 */
+	getActiveIndentGuide(lineNumber: number, minLineNumber: number, maxLineNumber: number): IActiveIndentGuideInfo;
 
 	/**
 	 * @internal
@@ -959,12 +1004,24 @@ export interface ITextModel {
 	pushEditOperations(beforeCursorState: Selection[], editOperations: IIdentifiedSingleEditOperation[], cursorStateComputer: ICursorStateComputer): Selection[];
 
 	/**
+	 * Change the end of line sequence. This is the preferred way of
+	 * changing the eol sequence. This will land on the undo stack.
+	 */
+	pushEOL(eol: EndOfLineSequence): void;
+
+	/**
 	 * Edit the model without adding the edits to the undo stack.
 	 * This can have dire consequences on the undo stack! See @pushEditOperations for the preferred way.
 	 * @param operations The edit operations.
 	 * @return The inverse edit operations, that, when applied, will bring the model back to the previous state.
 	 */
 	applyEdits(operations: IIdentifiedSingleEditOperation[]): IIdentifiedSingleEditOperation[];
+
+	/**
+	 * Change the end of line sequence without recording in the undo stack.
+	 * This can have dire consequences on the undo stack! See @pushEOL for the preferred way.
+	 */
+	setEOL(eol: EndOfLineSequence): void;
 
 	/**
 	 * Undo edit operations until the first previous stop point created by `pushStackElement`.
@@ -980,6 +1037,13 @@ export interface ITextModel {
 	 */
 	redo(): Selection[];
 
+	/**
+	 * @deprecated Please use `onDidChangeContent` instead.
+	 * An event emitted when the contents of the model have changed.
+	 * @internal
+	 * @event
+	 */
+	onDidChangeRawContentFast(listener: (e: ModelRawContentChangedEvent) => void): IDisposable;
 	/**
 	 * @deprecated Please use `onDidChangeContent` instead.
 	 * An event emitted when the contents of the model have changed.
@@ -1045,6 +1109,12 @@ export interface ITextModel {
 	 * @internal
 	 */
 	isAttachedToEditor(): boolean;
+
+	/**
+	 * Returns the count of editors this model is attached to.
+	 * @internal
+	 */
+	getAttachedEditorCount(): number;
 }
 
 /**
@@ -1078,6 +1148,7 @@ export interface ITextBuffer {
 	getRangeAt(offset: number, length: number): Range;
 
 	getValueInRange(range: Range, eol: EndOfLinePreference): string;
+	createSnapshot(preserveBOM: boolean): ITextSnapshot;
 	getValueLengthInRange(range: Range, eol: EndOfLinePreference): number;
 	getLength(): number;
 	getLineCount(): number;
@@ -1090,6 +1161,7 @@ export interface ITextBuffer {
 
 	setEOL(newEOL: '\r\n' | '\n'): void;
 	applyEdits(rawOperations: IIdentifiedSingleEditOperation[], recordTrimAutoWhitespace: boolean): ApplyEditsResult;
+	findMatchesLineByLine?(searchRange: Range, searchData: SearchData, captureMatches: boolean, limitResultCount: number): FindMatch[];
 }
 
 /**
@@ -1110,7 +1182,5 @@ export class ApplyEditsResult {
  */
 export interface IInternalModelContentChange extends IModelContentChange {
 	range: Range;
-	lines: string[];
-	rangeOffset: number;
 	forceMoveMarkers: boolean;
 }

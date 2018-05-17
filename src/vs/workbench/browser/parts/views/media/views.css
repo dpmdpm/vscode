@@ -20,10 +20,6 @@
 	content: ' ';
 }
 
-.file-icon-themable-tree.align-icons-and-twisties .monaco-tree-row:not(.has-children) .content::before {
-	display: none;
-}
-
 .file-icon-themable-tree .monaco-tree-row.has-children.expanded .content::before {
 	background-image: url("expanded.svg");
 }
@@ -49,8 +45,17 @@
 	background-image: url("collapsed-hc.svg");
 }
 
+.file-icon-themable-tree.align-icons-and-twisties .monaco-tree-row:not(.has-children) .content::before,
 .file-icon-themable-tree.hide-arrows .monaco-tree-row .content::before {
 	display: none;
+}
+
+.tree-explorer-viewlet-tree-view.file-icon-themable-tree .monaco-tree-row .content.align-icon-with-twisty::before {
+	display: none;
+}
+
+.tree-explorer-viewlet-tree-view.file-icon-themable-tree .monaco-tree-row .content:not(.align-icon-with-twisty)::before {
+	display: inline-block;
 }
 
 .tree-explorer-viewlet-tree-view .monaco-tree .monaco-tree-row .custom-view-tree-node-item {
@@ -82,6 +87,7 @@
 
 .tree-explorer-viewlet-tree-view .monaco-tree .monaco-tree-row .custom-view-tree-node-item > .actions {
 	display: none;
+	padding-right: 6px;
 }
 
 .tree-explorer-viewlet-tree-view .monaco-tree .monaco-tree-row:hover .custom-view-tree-node-item > .actions,

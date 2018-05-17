@@ -25,6 +25,8 @@ export interface IProductConfiguration {
 	extensionsGallery: {
 		serviceUrl: string;
 		itemUrl: string;
+		controlUrl: string;
+		recommendationsUrl: string;
 	};
 	extensionTips: { [id: string]: string; };
 	extensionImportantTips: { [id: string]: { name: string; pattern: string; }; };
@@ -58,6 +60,7 @@ export interface IProductConfiguration {
 	reportIssueUrl: string;
 	licenseUrl: string;
 	privacyStatementUrl: string;
+	telemetryOptOutUrl: string;
 	npsSurveyUrl: string;
 	surveys: ISurveyData[];
 	checksums: { [path: string]: string; };

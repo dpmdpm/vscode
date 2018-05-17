@@ -10,7 +10,7 @@ import { mkdirp, dirExists, realpath, writeFile } from 'vs/base/node/pfs';
 import Severity from 'vs/base/common/severity';
 import { TPromise } from 'vs/base/common/winjs.base';
 import { ExtensionDescriptionRegistry } from 'vs/workbench/services/extensions/node/extensionDescriptionRegistry';
-import { IExtensionDescription } from 'vs/platform/extensions/common/extensions';
+import { IExtensionDescription } from 'vs/workbench/services/extensions/common/extensions';
 import { ExtHostStorage } from 'vs/workbench/api/node/extHostStorage';
 import { createApiFactory, initializeExtensionApi, checkProposedApiEnabled } from 'vs/workbench/api/node/extHost.api.impl';
 import { MainContext, MainThreadExtensionServiceShape, IWorkspaceData, IEnvironment, IInitData, ExtHostExtensionServiceShape, MainThreadTelemetryShape, IExtHostContext } from './extHost.protocol';
@@ -20,8 +20,8 @@ import { ExtHostWorkspace } from 'vs/workbench/api/node/extHostWorkspace';
 import { TernarySearchTree } from 'vs/base/common/map';
 import { Barrier } from 'vs/base/common/async';
 import { ILogService } from 'vs/platform/log/common/log';
-import { IEnvironmentService } from 'vs/platform/environment/common/environment';
 import { ExtHostLogService } from 'vs/workbench/api/node/extHostLogService';
+import URI from 'vs/base/common/uri';
 
 class ExtensionMemento implements IExtensionMemento {
 
@@ -108,6 +108,7 @@ class ExtensionStoragePath {
 				join(storagePath, 'meta.json'),
 				JSON.stringify({
 					id: this._workspace.id,
+					configuration: this._workspace.configuration && URI.revive(this._workspace.configuration).toString(),
 					name: this._workspace.name
 				}, undefined, 2)
 			);
@@ -128,7 +129,6 @@ export class ExtHostExtensionService implements ExtHostExtensionServiceShape {
 	private readonly _storage: ExtHostStorage;
 	private readonly _storagePath: ExtensionStoragePath;
 	private readonly _proxy: MainThreadExtensionServiceShape;
-	private readonly _logService: ILogService;
 	private readonly _extHostLogService: ExtHostLogService;
 	private _activator: ExtensionsActivator;
 	private _extensionPathIndex: TPromise<TernarySearchTree<IExtensionDescription>>;
@@ -139,21 +139,19 @@ export class ExtHostExtensionService implements ExtHostExtensionServiceShape {
 		extHostContext: IExtHostContext,
 		extHostWorkspace: ExtHostWorkspace,
 		extHostConfiguration: ExtHostConfiguration,
-		logService: ILogService,
-		environmentService: IEnvironmentService
+		extHostLogService: ExtHostLogService
 	) {
 		this._barrier = new Barrier();
 		this._registry = new ExtensionDescriptionRegistry(initData.extensions);
-		this._logService = logService;
+		this._extHostLogService = extHostLogService;
 		this._mainThreadTelemetry = extHostContext.getProxy(MainContext.MainThreadTelemetry);
 		this._storage = new ExtHostStorage(extHostContext);
 		this._storagePath = new ExtensionStoragePath(initData.workspace, initData.environment);
 		this._proxy = extHostContext.getProxy(MainContext.MainThreadExtensionService);
 		this._activator = null;
-		this._extHostLogService = new ExtHostLogService(environmentService);
 
 		// initialize API first (i.e. do not release barrier until the API is initialized)
-		const apiFactory = createApiFactory(initData, extHostContext, extHostWorkspace, extHostConfiguration, this, logService);
+		const apiFactory = createApiFactory(initData, extHostContext, extHostWorkspace, extHostConfiguration, this, this._extHostLogService);
 
 		initializeExtensionApi(this, apiFactory).then(() => {
 
@@ -210,6 +208,17 @@ export class ExtHostExtensionService implements ExtHostExtensionServiceShape {
 		}
 	}
 
+	public activateByIdWithErrors(extensionId: string, reason: ExtensionActivationReason): TPromise<void> {
+		return this.activateById(extensionId, reason).then(() => {
+			const extension = this._activator.getActivatedExtension(extensionId);
+			if (extension.activationFailed) {
+				// activation failed => bubble up the error as the promise result
+				return TPromise.wrapError(extension.activationFailedError);
+			}
+			return void 0;
+		});
+	}
+
 	public getAllExtensionDescriptions(): IExtensionDescription[] {
 		return this._registry.getAllExtensionDescriptions();
 	}
@@ -234,8 +243,7 @@ export class ExtHostExtensionService implements ExtHostExtensionServiceShape {
 				if (!ext.main) {
 					return undefined;
 				}
-				return realpath(ext.extensionFolderPath).then(value => tree.set(value, ext));
-
+				return realpath(ext.extensionLocation.fsPath).then(value => tree.set(value, ext));
 			});
 			this._extensionPathIndex = TPromise.join(extensions).then(() => tree);
 		}
@@ -314,14 +322,14 @@ export class ExtHostExtensionService implements ExtHostExtensionServiceShape {
 			return TPromise.as(new EmptyExtension(ExtensionActivationTimes.NONE));
 		}
 
-		this._logService.info(`ExtensionService#_doActivateExtension ${extensionDescription.id} ${JSON.stringify(reason)}`);
+		this._extHostLogService.info(`ExtensionService#_doActivateExtension ${extensionDescription.id} ${JSON.stringify(reason)}`);
 
 		const activationTimesBuilder = new ExtensionActivationTimesBuilder(reason.startup);
 		return TPromise.join<any>([
-			loadCommonJSModule(this._logService, extensionDescription.main, activationTimesBuilder),
+			loadCommonJSModule(this._extHostLogService, extensionDescription.main, activationTimesBuilder),
 			this._loadExtensionContext(extensionDescription)
 		]).then(values => {
-			return ExtHostExtensionService._callActivate(this._logService, extensionDescription.id, <IExtensionModule>values[0], <IExtensionContext>values[1], activationTimesBuilder);
+			return ExtHostExtensionService._callActivate(this._extHostLogService, extensionDescription.id, <IExtensionModule>values[0], <IExtensionContext>values[1], activationTimesBuilder);
 		}, (errors: any[]) => {
 			// Avoid failing with an array of errors, fail with a single error
 			if (errors[0]) {
@@ -339,7 +347,7 @@ export class ExtHostExtensionService implements ExtHostExtensionServiceShape {
 		let globalState = new ExtensionMemento(extensionDescription.id, true, this._storage);
 		let workspaceState = new ExtensionMemento(extensionDescription.id, false, this._storage);
 
-		this._logService.trace(`ExtensionService#loadExtensionContext ${extensionDescription.id}`);
+		this._extHostLogService.trace(`ExtensionService#loadExtensionContext ${extensionDescription.id}`);
 		return TPromise.join([
 			globalState.whenReady,
 			workspaceState.whenReady,
@@ -350,12 +358,16 @@ export class ExtHostExtensionService implements ExtHostExtensionServiceShape {
 				globalState,
 				workspaceState,
 				subscriptions: [],
-				get extensionPath() { return extensionDescription.extensionFolderPath; },
+				get extensionPath() { return extensionDescription.extensionLocation.fsPath; },
 				storagePath: this._storagePath.value(extensionDescription),
-				asAbsolutePath: (relativePath: string) => { return join(extensionDescription.extensionFolderPath, relativePath); },
+				asAbsolutePath: (relativePath: string) => { return join(extensionDescription.extensionLocation.fsPath, relativePath); },
 				get logger() {
 					checkProposedApiEnabled(extensionDescription);
 					return that._extHostLogService.getExtLogger(extensionDescription.id);
+				},
+				get logDirectory() {
+					checkProposedApiEnabled(extensionDescription);
+					return that._extHostLogService.getLogDirectory(extensionDescription.id);
 				}
 			});
 		});
@@ -369,7 +381,7 @@ export class ExtHostExtensionService implements ExtHostExtensionServiceShape {
 		};
 
 		return this._callActivateOptional(logService, extensionId, extensionModule, context, activationTimesBuilder).then((extensionExports) => {
-			return new ActivatedExtension(false, activationTimesBuilder.build(), extensionModule, extensionExports, context.subscriptions);
+			return new ActivatedExtension(false, null, activationTimesBuilder.build(), extensionModule, extensionExports, context.subscriptions);
 		});
 	}
 
@@ -421,7 +433,7 @@ function getTelemetryActivationEvent(extensionDescription: IExtensionDescription
 		"TelemetryActivationEvent" : {
 			"id": { "classification": "PublicNonPersonalData", "purpose": "FeatureInsight" },
 			"name": { "classification": "PublicNonPersonalData", "purpose": "FeatureInsight" },
-			"publisherDisplayName": { "classification": "PublicNonPersonalData", "purpose": "FeatureInsight" },
+			"publisherDisplayName": { "classification": "SystemMetaData", "purpose": "FeatureInsight" },
 			"activationEvents": { "classification": "SystemMetaData", "purpose": "FeatureInsight" },
 			"isBuiltin": { "classification": "SystemMetaData", "purpose": "FeatureInsight" }
 		}

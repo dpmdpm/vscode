@@ -5,6 +5,7 @@
 
 'use strict';
 
+import 'vs/code/electron-main/contributions';
 import { app, dialog } from 'electron';
 import { assign } from 'vs/base/common/objects';
 import * as platform from 'vs/base/common/platform';
@@ -21,7 +22,7 @@ import { ServicesAccessor, IInstantiationService } from 'vs/platform/instantiati
 import { InstantiationService } from 'vs/platform/instantiation/common/instantiationService';
 import { ServiceCollection } from 'vs/platform/instantiation/common/serviceCollection';
 import { SyncDescriptor } from 'vs/platform/instantiation/common/descriptors';
-import { ILogService, ConsoleLogMainService, MultiplexLogService } from 'vs/platform/log/common/log';
+import { ILogService, ConsoleLogMainService, MultiplexLogService, getLogLevel } from 'vs/platform/log/common/log';
 import { StateService } from 'vs/platform/state/node/stateService';
 import { IStateService } from 'vs/platform/state/common/state';
 import { IBackupMainService } from 'vs/platform/backup/common/backup';
@@ -33,7 +34,7 @@ import { ConfigurationService } from 'vs/platform/configuration/node/configurati
 import { IRequestService } from 'vs/platform/request/node/request';
 import { RequestService } from 'vs/platform/request/electron-main/requestService';
 import { IURLService } from 'vs/platform/url/common/url';
-import { URLService } from 'vs/platform/url/electron-main/urlService';
+import { URLService } from 'vs/platform/url/common/urlService';
 import * as fs from 'original-fs';
 import { CodeApplication } from 'vs/code/electron-main/app';
 import { HistoryMainService } from 'vs/platform/history/electron-main/historyMainService';
@@ -45,12 +46,16 @@ import { mnemonicButtonLabel } from 'vs/base/common/labels';
 import { createSpdLogService } from 'vs/platform/log/node/spdlogService';
 import { printDiagnostics } from 'vs/code/electron-main/diagnostics';
 import { BufferLogService } from 'vs/platform/log/common/bufferLog';
+import { uploadLogs } from 'vs/code/electron-main/logUploader';
+import { setUnexpectedErrorHandler } from 'vs/base/common/errors';
+import { IDialogService } from 'vs/platform/dialogs/common/dialogs';
+import { CommandLineDialogService } from 'vs/platform/dialogs/node/dialogService';
 
 function createServices(args: ParsedArgs, bufferLogService: BufferLogService): IInstantiationService {
 	const services = new ServiceCollection();
 
 	const environmentService = new EnvironmentService(args, process.execPath);
-	const consoleLogService = new ConsoleLogMainService(environmentService);
+	const consoleLogService = new ConsoleLogMainService(getLogLevel(environmentService));
 	const logService = new MultiplexLogService([consoleLogService, bufferLogService]);
 
 	process.once('exit', () => logService.dispose());
@@ -66,8 +71,9 @@ function createServices(args: ParsedArgs, bufferLogService: BufferLogService): I
 	services.set(IStateService, new SyncDescriptor(StateService));
 	services.set(IConfigurationService, new SyncDescriptor(ConfigurationService));
 	services.set(IRequestService, new SyncDescriptor(RequestService));
-	services.set(IURLService, new SyncDescriptor(URLService, args['open-url'] ? args._urls : []));
+	services.set(IURLService, new SyncDescriptor(URLService));
 	services.set(IBackupMainService, new SyncDescriptor(BackupMainService));
+	services.set(IDialogService, new SyncDescriptor(CommandLineDialogService));
 
 	return new InstantiationService(services, true);
 }
@@ -135,7 +141,7 @@ function setupIPC(accessor: ServicesAccessor): TPromise<Server> {
 			}
 
 			// Log uploader usage info
-			if (environmentService.args['upload-logs']) {
+			if (typeof environmentService.args['upload-logs'] !== 'undefined') {
 				logService.warn('Warning: The --upload-logs argument can only be used if Code is already running. Please run it again after Code has started.');
 				throw new ExpectedError('Terminating...');
 			}
@@ -197,9 +203,8 @@ function setupIPC(accessor: ServicesAccessor): TPromise<Server> {
 					}
 
 					// Log uploader
-					if (environmentService.args['upload-logs']) {
-						return import('vs/code/electron-main/logUploader')
-							.then(logUploader => logUploader.uploadLogs(channel, requestService))
+					if (typeof environmentService.args['upload-logs'] !== 'undefined') {
+						return uploadLogs(channel, requestService, environmentService)
 							.then(() => TPromise.wrapError(new ExpectedError()));
 					}
 
@@ -286,8 +291,12 @@ function quit(accessor: ServicesAccessor, reason?: ExpectedError | Error): void 
 }
 
 function main() {
-	let args: ParsedArgs;
 
+	// Set the error handler early enough so that we are not getting the
+	// default electron error dialog popping up
+	setUnexpectedErrorHandler(err => console.error(err));
+
+	let args: ParsedArgs;
 	try {
 		args = parseMainProcessArgv(process.argv);
 		args = validatePaths(args);
@@ -320,7 +329,7 @@ function main() {
 		return instantiationService.invokeFunction(a => createPaths(a.get(IEnvironmentService)))
 			.then(() => instantiationService.invokeFunction(setupIPC))
 			.then(mainIpcServer => {
-				bufferLogService.logger = createSpdLogService('main', environmentService);
+				bufferLogService.logger = createSpdLogService('main', bufferLogService.getLevel(), environmentService.logsPath);
 				return instantiationService.createInstance(CodeApplication, mainIpcServer, instanceEnv).startup();
 			});
 	}).done(null, err => instantiationService.invokeFunction(quit, err));

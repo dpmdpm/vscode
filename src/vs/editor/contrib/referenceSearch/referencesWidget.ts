@@ -8,7 +8,7 @@ import 'vs/css!./media/referencesWidget';
 import * as nls from 'vs/nls';
 import { onUnexpectedError } from 'vs/base/common/errors';
 import { getPathLabel } from 'vs/base/common/labels';
-import Event, { Emitter } from 'vs/base/common/event';
+import { Event, Emitter } from 'vs/base/common/event';
 import { IDisposable, dispose, IReference } from 'vs/base/common/lifecycle';
 import { Schemas } from 'vs/base/common/network';
 import * as strings from 'vs/base/common/strings';
@@ -23,7 +23,6 @@ import { GestureEvent } from 'vs/base/browser/touch';
 import { CountBadge } from 'vs/base/browser/ui/countBadge/countBadge';
 import { FileLabel } from 'vs/base/browser/ui/iconLabel/iconLabel';
 import * as tree from 'vs/base/parts/tree/browser/tree';
-import { DefaultController } from 'vs/base/parts/tree/browser/treeDefaults';
 import { IInstantiationService, optional } from 'vs/platform/instantiation/common/instantiation';
 import { IWorkspaceContextService } from 'vs/platform/workspace/common/workspace';
 import { Range, IRange } from 'vs/editor/common/core/range';
@@ -36,14 +35,15 @@ import { FileReferences, OneReference, ReferencesModel } from './referencesModel
 import { ITextModelService, ITextEditorModel } from 'vs/editor/common/services/resolverService';
 import { registerColor, activeContrastBorder, contrastBorder } from 'vs/platform/theme/common/colorRegistry';
 import { registerThemingParticipant, ITheme, IThemeService } from 'vs/platform/theme/common/themeService';
-import { attachListStyler, attachBadgeStyler } from 'vs/platform/theme/common/styler';
+import { attachBadgeStyler } from 'vs/platform/theme/common/styler';
 import { IEditorOptions } from 'vs/editor/common/config/editorOptions';
 import { IEnvironmentService } from 'vs/platform/environment/common/environment';
 import URI from 'vs/base/common/uri';
 import { TrackedRangeStickiness, IModelDeltaDecoration } from 'vs/editor/common/model';
-import { WorkbenchTree } from 'vs/platform/list/browser/listService';
+import { WorkbenchTree, WorkbenchTreeController } from 'vs/platform/list/browser/listService';
 import { RawContextKey } from 'vs/platform/contextkey/common/contextkey';
 import { Location } from 'vs/editor/common/modes';
+import { ClickBehavior } from 'vs/base/parts/tree/browser/treeDefaults';
 
 class DecorationsManager implements IDisposable {
 
@@ -84,28 +84,25 @@ class DecorationsManager implements IDisposable {
 	private _addDecorations(reference: FileReferences): void {
 		this._callOnModelChange.push(this._editor.getModel().onDidChangeDecorations((event) => this._onDecorationChanged()));
 
-		this._editor.changeDecorations(accessor => {
+		const newDecorations: IModelDeltaDecoration[] = [];
+		const newDecorationsActualIndex: number[] = [];
 
-			const newDecorations: IModelDeltaDecoration[] = [];
-			const newDecorationsActualIndex: number[] = [];
-
-			for (let i = 0, len = reference.children.length; i < len; i++) {
-				let oneReference = reference.children[i];
-				if (this._decorationIgnoreSet.has(oneReference.id)) {
-					continue;
-				}
-				newDecorations.push({
-					range: oneReference.range,
-					options: DecorationsManager.DecorationOptions
-				});
-				newDecorationsActualIndex.push(i);
+		for (let i = 0, len = reference.children.length; i < len; i++) {
+			let oneReference = reference.children[i];
+			if (this._decorationIgnoreSet.has(oneReference.id)) {
+				continue;
 			}
+			newDecorations.push({
+				range: oneReference.range,
+				options: DecorationsManager.DecorationOptions
+			});
+			newDecorationsActualIndex.push(i);
+		}
 
-			const decorations = accessor.deltaDecorations([], newDecorations);
-			for (let i = 0; i < decorations.length; i++) {
-				this._decorations.set(decorations[i], reference.children[newDecorationsActualIndex[i]]);
-			}
-		});
+		const decorations = this._editor.deltaDecorations([], newDecorations);
+		for (let i = 0; i < decorations.length; i++) {
+			this._decorations.set(decorations[i], reference.children[newDecorationsActualIndex[i]]);
+		}
 	}
 
 	private _onDecorationChanged(): void {
@@ -143,28 +140,26 @@ class DecorationsManager implements IDisposable {
 			}
 		});
 
-		this._editor.changeDecorations((accessor) => {
-			for (let i = 0, len = toRemove.length; i < len; i++) {
-				this._decorations.delete(toRemove[i]);
-			}
-			accessor.deltaDecorations(toRemove, []);
-		});
+		for (let i = 0, len = toRemove.length; i < len; i++) {
+			this._decorations.delete(toRemove[i]);
+		}
+		this._editor.deltaDecorations(toRemove, []);
 	}
 
 	public removeDecorations(): void {
-		this._editor.changeDecorations(accessor => {
-			this._decorations.forEach((value, key) => {
-				accessor.removeDecoration(key);
-			});
-			this._decorations.clear();
+		let toRemove: string[] = [];
+		this._decorations.forEach((value, key) => {
+			toRemove.push(key);
 		});
+		this._editor.deltaDecorations(toRemove, []);
+		this._decorations.clear();
 	}
 }
 
 class DataSource implements tree.IDataSource {
 
 	constructor(
-		@ITextModelService private _textModelResolverService: ITextModelService
+		@ITextModelService private readonly _textModelResolverService: ITextModelService
 	) {
 		//
 	}
@@ -208,7 +203,7 @@ class DataSource implements tree.IDataSource {
 	}
 
 	public getParent(tree: tree.ITree, element: any): TPromise<any> {
-		var result: any = null;
+		let result: any = null;
 		if (element instanceof FileReferences) {
 			result = (<FileReferences>element).parent;
 		} else if (element instanceof OneReference) {
@@ -218,7 +213,7 @@ class DataSource implements tree.IDataSource {
 	}
 }
 
-class Controller extends DefaultController {
+class Controller extends WorkbenchTreeController {
 
 	private _onDidFocus = new Emitter<any>();
 	readonly onDidFocus: Event<any> = this._onDidFocus.event;
@@ -236,26 +231,30 @@ class Controller extends DefaultController {
 			return this._expandCollapse(tree, element);
 		}
 
-		var result = super.onTap(tree, element, event);
+		let result = super.onTap(tree, element, event);
 
 		this._onDidFocus.fire(element);
 		return result;
 	}
 
 	public onMouseDown(tree: tree.ITree, element: any, event: IMouseEvent): boolean {
+		let isDoubleClick = event.detail === 2;
 		if (event.leftButton) {
 			if (element instanceof FileReferences) {
-				event.preventDefault();
-				event.stopPropagation();
-				return this._expandCollapse(tree, element);
+				if (this.openOnSingleClick || isDoubleClick || this.isClickOnTwistie(event)) {
+					event.preventDefault();
+					event.stopPropagation();
+					return this._expandCollapse(tree, element);
+				}
 			}
 
-			var result = super.onClick(tree, element, event);
-			if (event.ctrlKey || event.metaKey || event.altKey) {
+			let result = super.onClick(tree, element, event);
+			let openToSide = event.ctrlKey || event.metaKey || event.altKey;
+			if (openToSide && (isDoubleClick || this.openOnSingleClick)) {
 				this._onDidOpenToSide.fire(element);
-			} else if (event.detail === 2) {
+			} else if (isDoubleClick) {
 				this._onDidSelect.fire(element);
-			} else {
+			} else if (this.openOnSingleClick) {
 				this._onDidFocus.fire(element);
 			}
 			return result;
@@ -301,7 +300,7 @@ class FileReferencesTemplate {
 
 	constructor(
 		container: HTMLElement,
-		@IWorkspaceContextService private _contextService: IWorkspaceContextService,
+		@IWorkspaceContextService private readonly _contextService: IWorkspaceContextService,
 		@optional(IEnvironmentService) private _environmentService: IEnvironmentService,
 		@IThemeService themeService: IThemeService,
 	) {
@@ -368,8 +367,8 @@ class Renderer implements tree.IRenderer {
 	};
 
 	constructor(
-		@IWorkspaceContextService private _contextService: IWorkspaceContextService,
-		@IThemeService private _themeService: IThemeService,
+		@IWorkspaceContextService private readonly _contextService: IWorkspaceContextService,
+		@IThemeService private readonly _themeService: IThemeService,
 		@optional(IEnvironmentService) private _environmentService: IEnvironmentService,
 	) {
 		//
@@ -529,17 +528,18 @@ export class ReferenceWidget extends PeekViewWidget {
 
 	constructor(
 		editor: ICodeEditor,
+		private _defaultTreeKeyboardSupport: boolean,
 		public layoutData: LayoutData,
 		private _textModelResolverService: ITextModelService,
 		private _contextService: IWorkspaceContextService,
-		private _themeService: IThemeService,
+		themeService: IThemeService,
 		private _instantiationService: IInstantiationService,
 		private _environmentService: IEnvironmentService
 	) {
 		super(editor, { showFrame: false, showArrow: true, isResizeable: true, isAccessible: true });
 
-		this._applyTheme(_themeService.getTheme());
-		this._callOnDispose.push(_themeService.onThemeChange(this._applyTheme.bind(this)));
+		this._applyTheme(themeService.getTheme());
+		this._callOnDispose.push(themeService.onThemeChange(this._applyTheme.bind(this)));
 		this.create();
 	}
 
@@ -571,7 +571,7 @@ export class ReferenceWidget extends PeekViewWidget {
 	}
 
 	focus(): void {
-		this._tree.DOMFocus();
+		this._tree.domFocus();
 	}
 
 	protected _onTitleClick(e: MouseEvent): void {
@@ -585,7 +585,7 @@ export class ReferenceWidget extends PeekViewWidget {
 	}
 
 	protected _fillBody(containerElement: HTMLElement): void {
-		var container = $(containerElement);
+		let container = $(containerElement);
 
 		this.setCssClass('reference-zone-widget');
 
@@ -597,7 +597,7 @@ export class ReferenceWidget extends PeekViewWidget {
 		// editor
 		container.div({ 'class': 'preview inline' }, (div: Builder) => {
 
-			var options: IEditorOptions = {
+			let options: IEditorOptions = {
 				scrollBeyondLastLine: false,
 				scrollbar: {
 					verticalScrollbarSize: 14,
@@ -631,30 +631,30 @@ export class ReferenceWidget extends PeekViewWidget {
 
 		// tree
 		container.div({ 'class': 'ref-tree inline' }, (div: Builder) => {
-			const controller = new Controller();
-			var config = <tree.ITreeConfiguration>{
+			let controller = this._instantiationService.createInstance(Controller, { keyboardSupport: this._defaultTreeKeyboardSupport, clickBehavior: ClickBehavior.ON_MOUSE_UP /* our controller already deals with this */ });
+			this._callOnDispose.push(controller);
+
+			let config = <tree.ITreeConfiguration>{
 				dataSource: this._instantiationService.createInstance(DataSource),
 				renderer: this._instantiationService.createInstance(Renderer),
 				controller,
 				accessibilityProvider: new AriaProvider()
 			};
 
-			var options: tree.ITreeOptions = {
+			let options: tree.ITreeOptions = {
 				twistiePixels: 20,
-				ariaLabel: nls.localize('treeAriaLabel', "References"),
-				keyboardSupport: false
+				ariaLabel: nls.localize('treeAriaLabel', "References")
 			};
 
 			this._tree = this._instantiationService.createInstance(WorkbenchTree, div.getHTMLElement(), config, options);
-			this._callOnDispose.push(attachListStyler(this._tree, this._themeService));
 
 			ctxReferenceWidgetSearchTreeFocused.bindTo(this._tree.contextKeyService);
 
 			// listen on selection and focus
-			var onEvent = (element: any, kind: 'show' | 'goto' | 'side') => {
+			let onEvent = (element: any, kind: 'show' | 'goto' | 'side') => {
 				if (element instanceof OneReference) {
 					if (kind === 'show') {
-						this._revealReference(element);
+						this._revealReference(element, false);
 					}
 					this._onDidSelectReference.fire({ element, kind, source: 'tree' });
 				}
@@ -706,7 +706,7 @@ export class ReferenceWidget extends PeekViewWidget {
 	}
 
 	public setSelection(selection: OneReference): TPromise<any> {
-		return this._revealReference(selection).then(() => {
+		return this._revealReference(selection, true).then(() => {
 
 			// show in tree
 			this._tree.setSelection([selection]);
@@ -776,7 +776,7 @@ export class ReferenceWidget extends PeekViewWidget {
 		return undefined;
 	}
 
-	private _revealReference(reference: OneReference): TPromise<void> {
+	private async _revealReference(reference: OneReference, revealParent: boolean): TPromise<void> {
 
 		// Update widget header
 		if (reference.uri.scheme !== Schemas.inMemory) {
@@ -786,6 +786,10 @@ export class ReferenceWidget extends PeekViewWidget {
 		}
 
 		const promise = this._textModelResolverService.createModelReference(reference.uri);
+
+		if (revealParent) {
+			await this._tree.reveal(reference.parent);
+		}
 
 		return TPromise.join([promise, this._tree.reveal(reference)]).then(values => {
 			const ref = values[0];
@@ -804,7 +808,7 @@ export class ReferenceWidget extends PeekViewWidget {
 				this._previewModelReference = ref;
 				let isSameModel = (this._preview.getModel() === model.textEditorModel);
 				this._preview.setModel(model.textEditorModel);
-				var sel = Range.lift(reference.range).collapseToStart();
+				let sel = Range.lift(reference.range).collapseToStart();
 				this._preview.setSelection(sel);
 				this._preview.revealRangeInCenter(sel, isSameModel ? editorCommon.ScrollType.Smooth : editorCommon.ScrollType.Immediate);
 			} else {
@@ -832,6 +836,7 @@ export const peekViewEditorGutterBackground = registerColor('peekViewEditorGutte
 
 export const peekViewResultsMatchHighlight = registerColor('peekViewResult.matchHighlightBackground', { dark: '#ea5c004d', light: '#ea5c004d', hc: null }, nls.localize('peekViewResultsMatchHighlight', 'Match highlight color in the peek view result list.'));
 export const peekViewEditorMatchHighlight = registerColor('peekViewEditor.matchHighlightBackground', { dark: '#ff8f0099', light: '#f5d802de', hc: null }, nls.localize('peekViewEditorMatchHighlight', 'Match highlight color in the peek view editor.'));
+export const peekViewEditorMatchHighlightBorder = registerColor('peekViewEditor.matchHighlightBorder', { dark: null, light: null, hc: activeContrastBorder }, nls.localize('peekViewEditorMatchHighlightBorder', 'Match highlight border in the peek view editor.'));
 
 
 registerThemingParticipant((theme, collector) => {
@@ -843,10 +848,13 @@ registerThemingParticipant((theme, collector) => {
 	if (referenceHighlightColor) {
 		collector.addRule(`.monaco-editor .reference-zone-widget .preview .reference-decoration { background-color: ${referenceHighlightColor}; }`);
 	}
+	let referenceHighlightBorder = theme.getColor(peekViewEditorMatchHighlightBorder);
+	if (referenceHighlightBorder) {
+		collector.addRule(`.monaco-editor .reference-zone-widget .preview .reference-decoration { border: 2px solid ${referenceHighlightBorder}; box-sizing: border-box; }`);
+	}
 	let hcOutline = theme.getColor(activeContrastBorder);
 	if (hcOutline) {
 		collector.addRule(`.monaco-editor .reference-zone-widget .ref-tree .referenceMatch { border: 1px dotted ${hcOutline}; box-sizing: border-box; }`);
-		collector.addRule(`.monaco-editor .reference-zone-widget .preview .reference-decoration { border: 2px solid ${hcOutline}; box-sizing: border-box; }`);
 	}
 	let resultsBackground = theme.getColor(peekViewResultsBackground);
 	if (resultsBackground) {

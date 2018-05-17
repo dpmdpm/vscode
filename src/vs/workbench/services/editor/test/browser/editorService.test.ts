@@ -7,7 +7,7 @@
 
 import * as assert from 'assert';
 import { Promise, TPromise } from 'vs/base/common/winjs.base';
-import paths = require('vs/base/common/paths');
+import * as paths from 'vs/base/common/paths';
 import { Position, IEditor, IEditorInput } from 'vs/platform/editor/common/editor';
 import URI from 'vs/base/common/uri';
 import { BaseEditor } from 'vs/workbench/browser/parts/editor/baseEditor';
@@ -19,6 +19,7 @@ import { UntitledEditorInput } from 'vs/workbench/common/editor/untitledEditorIn
 import { ResourceEditorInput } from 'vs/workbench/common/editor/resourceEditorInput';
 import { TestThemeService } from 'vs/platform/theme/test/common/testThemeService';
 import { ICloseEditorsFilter } from 'vs/workbench/browser/parts/editor/editorPart';
+import { snapshotToString } from 'vs/platform/files/common/files';
 
 let activeEditor: BaseEditor = {
 	getSelection: function () {
@@ -34,7 +35,7 @@ function toResource(path: string) {
 }
 
 function toFileResource(self: any, path: string) {
-	return URI.file(paths.join('C:\\', new Buffer(self.test.fullTitle()).toString('base64'), path));
+	return URI.file(paths.join('C:\\', Buffer.from(self.test.fullTitle()).toString('base64'), path));
 }
 
 class TestEditorPart implements IEditorPart {
@@ -163,7 +164,7 @@ suite('WorkbenchEditorService', () => {
 
 			const untitledInput = openedEditorInput as UntitledEditorInput;
 			untitledInput.resolve().then(model => {
-				assert.equal(model.getValue(), 'Hello Untitled');
+				assert.equal(snapshotToString(model.createSnapshot()), 'Hello Untitled');
 			});
 		});
 

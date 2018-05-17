@@ -19,7 +19,7 @@ import { RawContentChangedType } from 'vs/editor/common/model/textModelEvents';
 import { CursorChangeReason } from 'vs/editor/common/controller/cursorEvents';
 import { IViewModel } from 'vs/editor/common/viewModel/viewModel';
 import * as viewEvents from 'vs/editor/common/view/viewEvents';
-import Event, { Emitter } from 'vs/base/common/event';
+import { Event, Emitter } from 'vs/base/common/event';
 import { ITextModel, IIdentifiedSingleEditOperation, TrackedRangeStickiness } from 'vs/editor/common/model';
 
 function containsLineMappingChanged(events: viewEvents.ViewEvent[]): boolean {
@@ -87,11 +87,20 @@ export class CursorModelState {
 
 export class Cursor extends viewEvents.ViewEventEmitter implements ICursors {
 
+	public static MAX_CURSOR_COUNT = 10000;
+
+	private readonly _onDidReachMaxCursorCount: Emitter<void> = this._register(new Emitter<void>());
+	public readonly onDidReachMaxCursorCount: Event<void> = this._onDidReachMaxCursorCount.event;
+
+	private readonly _onDidAttemptReadOnlyEdit: Emitter<void> = this._register(new Emitter<void>());
+	public readonly onDidAttemptReadOnlyEdit: Event<void> = this._onDidAttemptReadOnlyEdit.event;
+
 	private readonly _onDidChange: Emitter<CursorStateChangedEvent> = this._register(new Emitter<CursorStateChangedEvent>());
 	public readonly onDidChange: Event<CursorStateChangedEvent> = this._onDidChange.event;
 
 	private readonly _configuration: editorCommon.IConfiguration;
 	private readonly _model: ITextModel;
+	private _knownModelVersionId: number;
 	private readonly _viewModel: IViewModel;
 	public context: CursorContext;
 	private _cursors: CursorCollection;
@@ -105,6 +114,7 @@ export class Cursor extends viewEvents.ViewEventEmitter implements ICursors {
 		super();
 		this._configuration = configuration;
 		this._model = model;
+		this._knownModelVersionId = this._model.getVersionId();
 		this._viewModel = viewModel;
 		this.context = new CursorContext(this._configuration, this._model, this._viewModel);
 		this._cursors = new CursorCollection(this.context);
@@ -115,6 +125,7 @@ export class Cursor extends viewEvents.ViewEventEmitter implements ICursors {
 		this._prevEditOperationType = EditOperationType.Other;
 
 		this._register(this._model.onDidChangeRawContent((e) => {
+			this._knownModelVersionId = e.versionId;
 			if (this._isHandling) {
 				return;
 			}
@@ -128,6 +139,16 @@ export class Cursor extends viewEvents.ViewEventEmitter implements ICursors {
 				return;
 			}
 
+			if (this._knownModelVersionId !== this._model.getVersionId()) {
+				// There are model change events that I didn't yet receive.
+				//
+				// This can happen when editing the model, and the view model receives the change events first,
+				// and the view model emits line mapping changed events, all before the cursor gets a chance to
+				// recover from markers.
+				//
+				// The model change listener above will be called soon and we'll ensure a valid cursor state there.
+				return;
+			}
 			// Ensure valid state
 			this.setStates('viewModel', CursorChangeReason.NotSet, this.getAll());
 		}));
@@ -136,13 +157,13 @@ export class Cursor extends viewEvents.ViewEventEmitter implements ICursors {
 			this.context = new CursorContext(this._configuration, this._model, this._viewModel);
 			this._cursors.updateContext(this.context);
 		};
-		this._register(model.onDidChangeLanguage((e) => {
+		this._register(this._model.onDidChangeLanguage((e) => {
 			updateCursorContext();
 		}));
-		this._register(model.onDidChangeLanguageConfiguration(() => {
+		this._register(this._model.onDidChangeLanguageConfiguration(() => {
 			updateCursorContext();
 		}));
-		this._register(model.onDidChangeOptions(() => {
+		this._register(this._model.onDidChangeOptions(() => {
 			updateCursorContext();
 		}));
 		this._register(this._configuration.onDidChange((e) => {
@@ -172,6 +193,11 @@ export class Cursor extends viewEvents.ViewEventEmitter implements ICursors {
 	}
 
 	public setStates(source: string, reason: CursorChangeReason, states: CursorState[]): void {
+		if (states.length > Cursor.MAX_CURSOR_COUNT) {
+			states = states.slice(0, Cursor.MAX_CURSOR_COUNT);
+			this._onDidReachMaxCursorCount.fire(void 0);
+		}
+
 		const oldState = new CursorModelState(this._model, this);
 
 		this._cursors.setStates(states);
@@ -329,11 +355,6 @@ export class Cursor extends viewEvents.ViewEventEmitter implements ICursors {
 			return;
 		}
 
-		if (this._configuration.editor.readOnly) {
-			// Cannot execute when read only
-			return;
-		}
-
 		if (opResult.shouldPushStackElementBefore) {
 			this._model.pushStackElement();
 		}
@@ -353,7 +374,7 @@ export class Cursor extends viewEvents.ViewEventEmitter implements ICursors {
 
 	private _interpretCommandResult(cursorState: Selection[]): void {
 		if (!cursorState || cursorState.length === 0) {
-			return;
+			cursorState = this._cursors.readSelectionFromMarkers();
 		}
 
 		this._columnSelectData = null;
@@ -374,7 +395,12 @@ export class Cursor extends viewEvents.ViewEventEmitter implements ICursors {
 		const viewSelections = this._cursors.getViewSelections();
 
 		// Let the view get the event first.
-		this._emit([new viewEvents.ViewCursorStateChangedEvent(viewSelections)]);
+		try {
+			const eventsCollector = this._beginEmit();
+			eventsCollector.emit(new viewEvents.ViewCursorStateChangedEvent(viewSelections));
+		} finally {
+			this._endEmit();
+		}
 
 		// Only after the view has been notified, let the rest of the world know...
 		if (!oldState
@@ -416,7 +442,12 @@ export class Cursor extends viewEvents.ViewEventEmitter implements ICursors {
 	}
 
 	public emitCursorRevealRange(viewRange: Range, verticalType: viewEvents.VerticalRevealType, revealHorizontal: boolean, scrollType: editorCommon.ScrollType) {
-		this._emit([new viewEvents.ViewRevealRangeRequestEvent(viewRange, verticalType, revealHorizontal, scrollType)]);
+		try {
+			const eventsCollector = this._beginEmit();
+			eventsCollector.emit(new viewEvents.ViewRevealRangeRequestEvent(viewRange, verticalType, revealHorizontal, scrollType));
+		} finally {
+			this._endEmit();
+		}
 	}
 
 	// -----------------------------------------------------------------------------------------------------------
@@ -435,8 +466,21 @@ export class Cursor extends viewEvents.ViewEventEmitter implements ICursors {
 			return;
 		}
 
+		if (this._configuration.editor.readOnly) {
+			// All the remaining handlers will try to edit the model,
+			// but we cannot edit when read only...
+			this._onDidAttemptReadOnlyEdit.fire(void 0);
+			return;
+		}
+
 		const oldState = new CursorModelState(this._model, this);
 		let cursorChangeReason = CursorChangeReason.NotSet;
+
+		if (handlerId !== H.Undo && handlerId !== H.Redo) {
+			// TODO@Alex: if the undo/redo stack contains non-null selections
+			// it would also be OK to stop tracking selections here
+			this._cursors.stopTrackingSelections();
+		}
 
 		// ensure valid state on all cursors
 		this._cursors.ensureValidState();
@@ -485,6 +529,10 @@ export class Cursor extends viewEvents.ViewEventEmitter implements ICursors {
 		}
 
 		this._isHandling = false;
+
+		if (handlerId !== H.Undo && handlerId !== H.Redo) {
+			this._cursors.startTrackingSelections();
+		}
 
 		if (this._emitStateChangedIfNecessary(source, cursorChangeReason, oldState)) {
 			this._revealRange(RevealTarget.Primary, viewEvents.VerticalRevealType.Simple, true, editorCommon.ScrollType.Smooth);

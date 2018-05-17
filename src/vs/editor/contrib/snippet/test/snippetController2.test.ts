@@ -37,7 +37,7 @@ suite('SnippetController2', function () {
 	setup(function () {
 		contextKeys = new MockContextKeyService();
 		model = TextModel.createFromString('if\n    $state\nfi');
-		editor = createTestCodeEditor(model);
+		editor = createTestCodeEditor({ model: model });
 		editor.setSelections([new Selection(1, 1, 1, 1), new Selection(2, 5, 2, 5)]);
 		assert.equal(model.getEOL(), '\n');
 	});
@@ -302,5 +302,19 @@ suite('SnippetController2', function () {
 		ctrl.insert('log($1);$0');
 		assertSelections(editor, new Selection(2, 9, 2, 9), new Selection(1, 7, 1, 7));
 		assertContextKeys(contextKeys, true, false, true);
+	});
+
+	test('“Nested” snippets terminating abruptly in VSCode 1.19.2. #42012', function () {
+
+		const ctrl = new SnippetController2(editor, logService, contextKeys);
+		model.setValue('');
+		editor.setSelection(new Selection(1, 1, 1, 1));
+		ctrl.insert('var ${2:${1:name}} = ${1:name} + 1;${0}');
+
+		assertSelections(editor, new Selection(1, 5, 1, 9), new Selection(1, 12, 1, 16));
+		assertContextKeys(contextKeys, true, false, true);
+
+		ctrl.next();
+		assertContextKeys(contextKeys, true, true, true);
 	});
 });

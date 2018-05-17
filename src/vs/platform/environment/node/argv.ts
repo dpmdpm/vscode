@@ -11,6 +11,7 @@ import { localize } from 'vs/nls';
 import { ParsedArgs } from '../common/environment';
 import { isWindows } from 'vs/base/common/platform';
 import product from 'vs/platform/node/product';
+import { MIN_MAX_MEMORY_SIZE_MB } from 'vs/platform/files/common/files';
 
 const options: minimist.Opts = {
 	string: [
@@ -28,7 +29,9 @@ const options: minimist.Opts = {
 		'debugBrkSearch',
 		'enable-proposed-api',
 		'export-default-configuration',
-		'install-source'
+		'install-source',
+		'upload-logs',
+		'driver'
 	],
 	boolean: [
 		'help',
@@ -49,6 +52,7 @@ const options: minimist.Opts = {
 		'list-extensions',
 		'show-versions',
 		'nolazy',
+		'issue',
 		'skip-getting-started',
 		'skip-release-notes',
 		'sticky-quickopen',
@@ -60,7 +64,7 @@ const options: minimist.Opts = {
 		'status',
 		'file-write',
 		'file-chmod',
-		'upload-logs'
+		'driver-verbose'
 	],
 	alias: {
 		add: 'a',
@@ -85,6 +89,10 @@ const options: minimist.Opts = {
 function validate(args: ParsedArgs): ParsedArgs {
 	if (args.goto) {
 		args._.forEach(arg => assert(/^(\w:)?[^:]+(:\d*){0,2}$/.test(arg), localize('gotoValidation', "Arguments in `--goto` mode should be in the format of `FILE(:LINE(:CHARACTER))`.")));
+	}
+
+	if (args['max-memory']) {
+		assert(args['max-memory'] >= MIN_MAX_MEMORY_SIZE_MB, `The max-memory argument cannot be specified lower than ${MIN_MAX_MEMORY_SIZE_MB} MB.`);
 	}
 
 	return args;
@@ -137,11 +145,11 @@ const optionsHelp: { [name: string]: string; } = {
 	'-d, --diff <file> <file>': localize('diff', "Compare two files with each other."),
 	'-a, --add <dir>': localize('add', "Add folder(s) to the last active window."),
 	'-g, --goto <file:line[:character]>': localize('goto', "Open a file at the path on the specified line and character position."),
-	'-n, --new-window': localize('newWindow', "Force a new instance of Code."),
-	'-r, --reuse-window': localize('reuseWindow', "Force opening a file or folder in the last active window."),
+	'-n, --new-window': localize('newWindow', "Force to open a new window."),
+	'-r, --reuse-window': localize('reuseWindow', "Force to open a file or folder in the last active window."),
 	'-w, --wait': localize('wait', "Wait for the files to be closed before returning."),
 	'--locale <locale>': localize('locale', "The locale to use (e.g. en-US or zh-TW)."),
-	'--user-data-dir <dir>': localize('userDataDir', "Specifies the directory that user data is kept in, useful when running as root."),
+	'--user-data-dir <dir>': localize('userDataDir', "Specifies the directory that user data is kept in. Can be used to open multiple distinct instances of Code."),
 	'-v, --version': localize('version', "Print version."),
 	'-h, --help': localize('help', "Print usage.")
 };
@@ -152,7 +160,7 @@ const extensionsHelp: { [name: string]: string; } = {
 	'--show-versions': localize('showVersions', "Show versions of installed extensions, when using --list-extension."),
 	'--install-extension (<extension-id> | <extension-vsix-path>)': localize('installExtension', "Installs an extension."),
 	'--uninstall-extension (<extension-id> | <extension-vsix-path>)': localize('uninstallExtension', "Uninstalls an extension."),
-	'--enable-proposed-api <extension-id>': localize('experimentalApis', "Enables proposed api features for an extension.")
+	'--enable-proposed-api <extension-id>': localize('experimentalApis', "Enables proposed API features for an extension.")
 };
 
 const troubleshootingHelp: { [name: string]: string; } = {
@@ -162,10 +170,11 @@ const troubleshootingHelp: { [name: string]: string; } = {
 	'-p, --performance': localize('performance', "Start with the 'Developer: Startup Performance' command enabled."),
 	'--prof-startup': localize('prof-startup', "Run CPU profiler during startup"),
 	'--disable-extensions': localize('disableExtensions', "Disable all installed extensions."),
-	'--inspect-extensions': localize('inspect-extensions', "Allow debugging and profiling of extensions. Check the developer tools for the connection uri."),
-	'--inspect-brk-extensions': localize('inspect-brk-extensions', "Allow debugging and profiling of extensions with the extension host being paused after start. Check the developer tools for the connection uri."),
+	'--inspect-extensions': localize('inspect-extensions', "Allow debugging and profiling of extensions. Check the developer tools for the connection URI."),
+	'--inspect-brk-extensions': localize('inspect-brk-extensions', "Allow debugging and profiling of extensions with the extension host being paused after start. Check the developer tools for the connection URI."),
 	'--disable-gpu': localize('disableGPU', "Disable GPU hardware acceleration."),
-	'--upload-logs': localize('uploadLogs', "Uploads logs from current session to a secure endpoint.")
+	'--upload-logs': localize('uploadLogs', "Uploads logs from current session to a secure endpoint."),
+	'--max-memory': localize('maxMemory', "Max memory size for a window (in Mbytes).")
 };
 
 export function formatOptions(options: { [name: string]: string; }, columns: number): string {
